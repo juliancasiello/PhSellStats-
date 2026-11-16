@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: phsellstats
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: SEED_DEMO_ON_EMPTY
+        value: "false"
+      - key: ACTIVE_SYNC_INTERVAL_MINUTES
+        value: "10"
+      - key: IDLE_SYNC_INTERVAL_MINUTES
+        value: "120"
