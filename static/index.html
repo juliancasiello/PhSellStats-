@@ -64,6 +64,10 @@
           <option value="365">Todo el historial</option>
         </select>
 
+        <select id="filterMonth" class="bg-cardbg border border-borderdark rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" title="Filtrar por mes calendario">
+          <option value="all">Por período</option>
+        </select>
+
         <select id="filterDateMode" class="bg-cardbg border border-borderdark rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" title="Cómo filtrar el período">
           <option value="sale_date" selected>Por fecha de venta</option>
           <option value="event_date">Por fecha del evento</option>
@@ -138,6 +142,7 @@
           <div class="inline-flex rounded-lg border border-borderdark overflow-hidden">
             <button data-gran="hour" class="gran-btn px-2.5 py-1 bg-indigo-600 text-white font-medium cursor-pointer">Por Hora</button>
             <button data-gran="day" class="gran-btn px-2.5 py-1 bg-slatebg text-slate-300 hover:bg-slate-800 cursor-pointer">Por Día</button>
+            <button data-gran="month" class="gran-btn px-2.5 py-1 bg-slatebg text-slate-300 hover:bg-slate-800 cursor-pointer">Por Mes</button>
           </div>
           <div class="inline-flex rounded-lg border border-borderdark overflow-hidden">
             <button data-metric="revenue" class="metric-btn px-2.5 py-1 bg-indigo-600 text-white font-medium cursor-pointer">Ingresos</button>

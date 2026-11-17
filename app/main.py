@@ -1,19 +1,22 @@
 import asyncio
-import base64
+import hashlib
+import hmac
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.config import APP_PASSWORD, BASE_DIR, load_config, save_config
+from app.config import APP_PIN, BASE_DIR, SESSION_SECRET, load_config, save_config
 from app.database import (
     clear_demo_data,
     evaluate_goals,
+    get_available_months,
     get_conn,
     get_events_comparison,
     get_goals_with_progress,
@@ -50,31 +53,117 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PhSellStats", version="1.0.0", lifespan=lifespan)
 
+# Brute-force protection state: ip -> {"fails": int, "locked_until": float}
+_login_attempts: dict[str, dict[str, float]] = {}
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_SECONDS = 300
+SESSION_COOKIE_NAME = "phsellstats_session"
+
+
+def _sign_session(ts: str) -> str:
+    sig = hmac.new(SESSION_SECRET.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{ts}.{sig}"
+
+
+def _verify_session(cookie_val: Optional[str]) -> bool:
+    if not cookie_val or "." not in cookie_val:
+        return False
+    ts, sig = cookie_val.split(".", 1)
+    expected = hmac.new(SESSION_SECRET.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not secrets.compare_digest(sig, expected):
+        return False
+    try:
+        age = time.time() - int(ts)
+        return 0 <= age <= 60 * 60 * 24 * 30  # 30 days
+    except ValueError:
+        return False
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if fwd:
+        return fwd
+    return request.client.host if request.client else "unknown"
+
 
 @app.middleware("http")
-async def basic_auth_middleware(request: Request, call_next):
-    if APP_PASSWORD and request.url.path != "/healthz":
-        auth = request.headers.get("Authorization", "")
-        authorized = False
-        if auth.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(auth[6:]).decode("utf-8")
-                _, pwd = decoded.split(":", 1)
-                authorized = secrets.compare_digest(pwd, APP_PASSWORD)
-            except Exception:
-                authorized = False
-        if not authorized:
-            return Response(
-                status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="PhSellStats"'},
-                content="Autenticación requerida",
-            )
+async def session_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if APP_PIN and not (
+        path == "/healthz"
+        or path == "/login"
+        or path.startswith("/api/auth/")
+        or path.startswith("/static/")
+    ):
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+        if not _verify_session(token):
+            if path.startswith("/api/"):
+                return JSONResponse(status_code=401, content={"detail": "No autenticado"})
+            return RedirectResponse(url="/login", status_code=302)
     return await call_next(request)
 
 
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
+
+
+@app.get("/login")
+async def login_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+class PinLogin(BaseModel):
+    pin: str
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(payload: PinLogin, request: Request):
+    ip = _client_ip(request)
+    now = time.time()
+    rec = _login_attempts.get(ip, {"fails": 0, "locked_until": 0.0})
+
+    if rec["locked_until"] > now:
+        remaining = int(rec["locked_until"] - now) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Demasiados intentos fallidos. Esperá {remaining} segundos.",
+        )
+
+    if not APP_PIN or secrets.compare_digest(payload.pin.strip(), APP_PIN):
+        _login_attempts.pop(ip, None)
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=_sign_session(str(int(now))),
+            httponly=True,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 30,
+        )
+        return resp
+
+    await asyncio.sleep(0.4)
+    fails = int(rec["fails"]) + 1
+    if fails >= MAX_LOGIN_ATTEMPTS:
+        _login_attempts[ip] = {"fails": 0, "locked_until": now + LOCKOUT_SECONDS}
+        raise HTTPException(
+            status_code=429,
+            detail=f"Demasiados intentos fallidos. Bloqueado por {LOCKOUT_SECONDS // 60} minutos.",
+        )
+
+    _login_attempts[ip] = {"fails": fails, "locked_until": 0.0}
+    left = MAX_LOGIN_ATTEMPTS - fails
+    raise HTTPException(
+        status_code=401,
+        detail=f"PIN incorrecto. Quedan {left} intento(s) antes del bloqueo.",
+    )
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE_NAME)
+    return resp
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -112,23 +201,30 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/api/months")
+async def api_months():
+    return {"months": get_available_months()}
+
+
 @app.get("/api/summary")
 async def api_summary(
     platform: str = Query("all"),
     event_name: str = Query("all"),
     days: int = Query(30),
     date_mode: str = Query("sale_date", pattern="^(sale_date|event_date)$"),
+    month: str = Query("all"),
 ):
-    return get_summary(platform=platform, event_name=event_name, days=days, date_mode=date_mode)
+    return get_summary(platform=platform, event_name=event_name, days=days, date_mode=date_mode, month=month)
 
 
 @app.get("/api/timeseries")
 async def api_timeseries(
-    granularity: str = Query("hour", pattern="^(hour|day)$"),
+    granularity: str = Query("hour", pattern="^(hour|day|month)$"),
     platform: str = Query("all"),
     event_name: str = Query("all"),
     days: int = Query(30),
     date_mode: str = Query("sale_date", pattern="^(sale_date|event_date)$"),
+    month: str = Query("all"),
 ):
     return get_timeseries(
         granularity=granularity,
@@ -136,6 +232,7 @@ async def api_timeseries(
         event_name=event_name,
         days=days,
         date_mode=date_mode,
+        month=month,
     )
 
 
@@ -144,8 +241,9 @@ async def api_events(
     days: int = Query(90),
     platform: str = Query("all"),
     date_mode: str = Query("sale_date", pattern="^(sale_date|event_date)$"),
+    month: str = Query("all"),
 ):
-    comparison = get_events_comparison(days=days, platform=platform, date_mode=date_mode)
+    comparison = get_events_comparison(days=days, platform=platform, date_mode=date_mode, month=month)
     names = sorted({item["event_name"] for item in comparison})
     return {"events": comparison, "event_names": names}
 

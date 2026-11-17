@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhSellStats — Acceso</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#0b0f19] text-slate-100 min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-xs bg-[#111827] border border-[#1f2937] rounded-2xl p-6 shadow-2xl space-y-5">
+    <div class="text-center space-y-2">
+      <div class="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-indigo-500 to-emerald-400 flex items-center justify-center font-bold text-slate-950 text-lg shadow-lg shadow-indigo-500/20">
+        PS
+      </div>
+      <h1 class="text-lg font-bold tracking-tight">PhSellStats</h1>
+      <p class="text-xs text-slate-400">Ingresá tu PIN numérico para acceder</p>
+    </div>
+
+    <form id="loginForm" class="space-y-4">
+      <input
+        id="pinInput"
+        type="password"
+        inputmode="numeric"
+        pattern="[0-9]*"
+        autocomplete="current-password"
+        placeholder="••••"
+        maxlength="12"
+        autofocus
+        required
+        class="w-full bg-[#0b0f19] border border-[#1f2937] rounded-xl px-4 py-3 text-center text-2xl tracking-[0.4em] text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+      />
+      <div id="errorBox" class="hidden text-xs text-rose-300 bg-rose-500/15 border border-rose-500/30 rounded-lg px-3 py-2 text-center"></div>
+      <button
+        id="btnLogin"
+        type="submit"
+        class="w-full bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white font-semibold py-2.5 rounded-xl transition cursor-pointer"
+      >
+        Entrar
+      </button>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const pinInput = document.getElementById('pinInput');
+    const errorBox = document.getElementById('errorBox');
+    const btn = document.getElementById('btnLogin');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorBox.classList.add('hidden');
+      btn.disabled = true;
+      btn.textContent = 'Verificando...';
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pinInput.value.trim() }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          window.location.href = '/';
+          return;
+        }
+        errorBox.textContent = data.detail || 'PIN incorrecto.';
+        errorBox.classList.remove('hidden');
+        pinInput.value = '';
+        pinInput.focus();
+      } catch (err) {
+        errorBox.textContent = 'Error de conexión. Reintentá.';
+        errorBox.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+      }
+    });
+  </script>
+</body>
+</html>

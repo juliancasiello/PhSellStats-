@@ -466,6 +466,7 @@ def _build_sales_filter(
     days: int = 30,
     date_mode: str = "sale_date",
     alias: str = "",
+    month: str = "all",
 ) -> tuple[str, list[Any]]:
     p = f"{alias}." if alias else ""
     clauses = [f"{p}status != 'refunded'"]
@@ -478,7 +479,16 @@ def _build_sales_filter(
             f"({p}event_name = ? OR {p}event_id IN (SELECT id FROM events WHERE canonical_name = ?))"
         )
         params.extend([event_name, event_name])
-    if days > 0:
+    if month and month != "all":
+        if date_mode == "event_date":
+            clauses.append(
+                f"substr(COALESCE((SELECT event_date FROM events WHERE id = {p}event_id), substr({p}sold_at, 1, 10)), 1, 7) = ?"
+            )
+            params.append(month)
+        else:
+            clauses.append(f"substr({p}sold_at, 1, 7) = ?")
+            params.append(month)
+    elif days > 0:
         if date_mode == "event_date":
             cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
             clauses.append(
@@ -492,13 +502,27 @@ def _build_sales_filter(
     return " AND ".join(clauses), params
 
 
+def get_available_months() -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT substr(sold_at, 1, 7) AS m FROM sales WHERE status != 'refunded'
+            UNION
+            SELECT DISTINCT substr(event_date, 1, 7) AS m FROM events WHERE event_date IS NOT NULL
+            ORDER BY m DESC
+            """
+        ).fetchall()
+    return [str(r["m"]) for r in rows if r["m"]]
+
+
 def get_summary(
     platform: str = "all",
     event_name: str = "all",
     days: int = 30,
     date_mode: str = "sale_date",
+    month: str = "all",
 ) -> dict[str, Any]:
-    where_sql, params = _build_sales_filter(platform, event_name, days, date_mode)
+    where_sql, params = _build_sales_filter(platform, event_name, days, date_mode, month=month)
     with get_conn() as conn:
         row = conn.execute(
             f"""
@@ -563,9 +587,10 @@ def get_timeseries(
     event_name: str = "all",
     days: int = 30,
     date_mode: str = "sale_date",
+    month: str = "all",
 ) -> list[dict[str, Any]]:
-    where_sql, params = _build_sales_filter(platform, event_name, days, date_mode)
-    fmt = "%Y-%m-%d %H:00" if granularity == "hour" else "%Y-%m-%d"
+    where_sql, params = _build_sales_filter(platform, event_name, days, date_mode, month=month)
+    fmt = "%Y-%m-%d %H:00" if granularity == "hour" else ("%Y-%m" if granularity == "month" else "%Y-%m-%d")
     with get_conn() as conn:
         rows = conn.execute(
             f"""
@@ -618,13 +643,60 @@ def get_timeseries(
         buckets[b]["total_items"] += items
         buckets[b]["total_revenue"] = round(buckets[b]["total_revenue"] + rev, 2)
 
+    if granularity == "month":
+        if not buckets:
+            return []
+        sorted_m = sorted(buckets.keys())
+        cur_y, cur_m = map(int, sorted_m[0].split("-"))
+        end_dt_now = datetime.now()
+        end_y, end_m = end_dt_now.year, end_dt_now.month
+        last_y, last_m = map(int, sorted_m[-1].split("-"))
+        if (last_y, last_m) > (end_y, end_m):
+            end_y, end_m = last_y, last_m
+        filled_m: list[dict[str, Any]] = []
+        while (cur_y, cur_m) <= (end_y, end_m):
+            key = f"{cur_y:04d}-{cur_m:02d}"
+            filled_m.append(
+                buckets.get(
+                    key,
+                    {
+                        "bucket": key,
+                        "lumepic_sales": 0,
+                        "lumepic_items": 0,
+                        "lumepic_revenue": 0.0,
+                        "momentia_sales": 0,
+                        "momentia_items": 0,
+                        "momentia_revenue": 0.0,
+                        "total_sales": 0,
+                        "total_items": 0,
+                        "total_revenue": 0.0,
+                    },
+                )
+            )
+            cur_m += 1
+            if cur_m > 12:
+                cur_m = 1
+                cur_y += 1
+        return filled_m
+
     step = timedelta(hours=1) if granularity == "hour" else timedelta(days=1)
     str_fmt = "%Y-%m-%d %H:00" if granularity == "hour" else "%Y-%m-%d"
     end_dt = datetime.now().replace(minute=0, second=0, microsecond=0)
     if granularity == "day":
         end_dt = end_dt.replace(hour=0)
 
-    if days > 0 and days < 365:
+    if month and month != "all":
+        m_start = datetime.strptime(f"{month}-01", "%Y-%m-%d")
+        if m_start.month == 12:
+            m_end = datetime(m_start.year + 1, 1, 1) - timedelta(days=1)
+        else:
+            m_end = datetime(m_start.year, m_start.month + 1, 1) - timedelta(days=1)
+        if granularity == "hour":
+            m_end = m_end.replace(hour=23)
+        cur = m_start
+        if m_end < end_dt:
+            end_dt = m_end
+    elif days > 0 and days < 365:
         cur = end_dt - timedelta(days=days)
         if granularity == "hour":
             cur += timedelta(hours=1)
@@ -667,8 +739,9 @@ def get_events_comparison(
     days: int = 90,
     platform: str = "all",
     date_mode: str = "sale_date",
+    month: str = "all",
 ) -> list[dict[str, Any]]:
-    s_where, params = _build_sales_filter(platform, "all", days, date_mode, alias="s")
+    s_where, params = _build_sales_filter(platform, "all", days, date_mode, alias="s", month=month)
     with get_conn() as conn:
         rows = conn.execute(
             f"""

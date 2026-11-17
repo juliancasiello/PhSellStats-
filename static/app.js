@@ -2,6 +2,7 @@ const state = {
   platform: 'all',
   event_name: 'all',
   days: 7,
+  month: 'all',
   date_mode: 'sale_date',
   granularity: 'hour',
   metric: 'revenue',
@@ -52,6 +53,10 @@ async function apiFetch(url, options = {}) {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
+  if (res.status === 401) {
+    window.location.href = '/login';
+    throw new Error('No autenticado');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Error HTTP ${res.status}`);
@@ -59,8 +64,31 @@ async function apiFetch(url, options = {}) {
   return res.json();
 }
 
+function fmtMonthLabel(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, (m || 1) - 1, 1);
+  const name = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+async function loadMonths() {
+  const data = await apiFetch('/api/months');
+  const sel = document.getElementById('filterMonth');
+  if (!sel) return;
+  const cur = state.month;
+  sel.innerHTML = '<option value="all">Por período</option>';
+  (data.months || []).forEach((ym) => {
+    const opt = document.createElement('option');
+    opt.value = ym;
+    opt.textContent = fmtMonthLabel(ym);
+    if (ym === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
 async function loadAll() {
   await Promise.all([
+    loadMonths(),
     loadSummary(),
     loadTimeseries(),
     loadEvents(),
@@ -74,6 +102,7 @@ async function loadSummary() {
     platform: state.platform,
     event_name: state.event_name,
     days: state.days,
+    month: state.month,
     date_mode: state.date_mode,
   });
   const data = await apiFetch(`/api/summary?${q}`);
@@ -111,13 +140,16 @@ async function loadTimeseries() {
     platform: state.platform,
     event_name: state.event_name,
     days: state.days,
+    month: state.month,
     date_mode: state.date_mode,
   });
   const rows = await apiFetch(`/api/timeseries?${q}`);
 
-  const labels = rows.map((r) =>
-    state.granularity === 'hour' ? r.bucket.slice(5) : r.bucket
-  );
+  const labels = rows.map((r) => {
+    if (state.granularity === 'hour') return r.bucket.slice(5);
+    if (state.granularity === 'month') return fmtMonthLabel(r.bucket);
+    return r.bucket;
+  });
   let lumeSeries = rows.map((r) =>
     state.metric === 'revenue' ? r.lumepic_revenue : (r.lumepic_items ?? r.lumepic_sales)
   );
@@ -214,7 +246,7 @@ async function loadTimeseries() {
 }
 
 async function loadEvents() {
-  const q = new URLSearchParams({ days: state.days, platform: state.platform, date_mode: state.date_mode });
+  const q = new URLSearchParams({ days: state.days, month: state.month, platform: state.platform, date_mode: state.date_mode });
   const data = await apiFetch(`/api/events?${q}`);
 
   // Update event dropdown preserving current selection
@@ -554,6 +586,13 @@ document.getElementById('filterEvent').addEventListener('change', (e) => {
 });
 document.getElementById('filterDays').addEventListener('change', (e) => {
   state.days = Number(e.target.value);
+  state.month = 'all';
+  const mSel = document.getElementById('filterMonth');
+  if (mSel) mSel.value = 'all';
+  loadAll();
+});
+document.getElementById('filterMonth')?.addEventListener('change', (e) => {
+  state.month = e.target.value;
   loadAll();
 });
 document.getElementById('filterDateMode')?.addEventListener('change', (e) => {

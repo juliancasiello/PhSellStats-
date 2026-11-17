@@ -9,7 +9,8 @@ load_dotenv(BASE_DIR / ".env")
 
 TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip()
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
-APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
+APP_PIN = os.getenv("APP_PIN", "4571").strip()
+SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or f"phsell_{APP_PIN}_{TURSO_AUTH_TOKEN[:16]}"
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
