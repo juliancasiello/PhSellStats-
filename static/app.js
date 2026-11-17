@@ -220,6 +220,10 @@ async function loadTimeseries() {
               const v = ctxItem.parsed.y;
               return `${ctxItem.dataset.label}: ${state.metric === 'revenue' ? fmtMoney(v) : v + ' fotos'}`;
             },
+            footer: (items) => {
+              const sum = items.reduce((acc, it) => acc + (it.parsed.y || 0), 0);
+              return `Total: ${state.metric === 'revenue' ? fmtMoney(sum) : sum + ' fotos'}`;
+            },
           },
         },
       },
@@ -402,12 +406,17 @@ async function loadEvents() {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', axis: 'y', intersect: false },
       plugins: {
         legend: { labels: { color: '#cbd5e1', font: { size: 11 } } },
         tooltip: {
           callbacks: {
             title: (items) => (items.length ? evLabels[items[0].dataIndex] : ''),
             label: (c) => `${c.dataset.label}: ${fmtMoney(c.parsed.x)}`,
+            footer: (items) => {
+              const sum = items.reduce((acc, it) => acc + (it.parsed.x || 0), 0);
+              return `Total: ${fmtMoney(sum)}`;
+            },
           },
         },
       },
